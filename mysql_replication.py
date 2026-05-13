@@ -541,25 +541,33 @@ def get_master_gtid_status(master_conn) -> str:
     return row["gtid_executed"]
 
 
-def configure_replication(replica_conn, master_host: str, master_port: int):
+def configure_replication(replica_conn, master_host: str, master_port: int,
+                          delay_seconds: int = 0):
     """Set up the replication channel on the replica pointing to the master."""
     repl_user, repl_password = get_repl_creds()
     port = master_port
 
     cur = replica_conn.cursor()
 
-    console.print(f"\n[dim]Configuring replication channel → {master_host}:{port}[/]")
+    delay_label = f" (delay={delay_seconds}s)" if delay_seconds > 0 else ""
+    console.print(f"\n[dim]Configuring replication channel → {master_host}:{port}{delay_label}[/]")
 
-    cur.execute(
+    sql = (
         "CHANGE REPLICATION SOURCE TO "
         "SOURCE_HOST = %s, "
         "SOURCE_PORT = %s, "
         "SOURCE_USER = %s, "
         "SOURCE_PASSWORD = %s, "
         "SOURCE_AUTO_POSITION = 1, "
-        "GET_SOURCE_PUBLIC_KEY = 1",
-        (master_host, port, repl_user, repl_password),
+        "GET_SOURCE_PUBLIC_KEY = 1"
     )
+    params = [master_host, port, repl_user, repl_password]
+
+    if delay_seconds > 0:
+        sql += ", SOURCE_DELAY = %s"
+        params.append(delay_seconds)
+
+    cur.execute(sql, tuple(params))
     cur.close()
     console.print("[bold green]✔[/] Replication channel configured.")
 
@@ -616,6 +624,8 @@ def start_replication(replica_conn):
     table.add_row("Source Port",     str(status.get("Source_Port",
                                                      status.get("Master_Port", "?"))))
     table.add_row("Auto Position",   str(status.get("Auto_Position", "?")))
+    table.add_row("SQL Delay",       str(status.get("SQL_Delay",
+                                                      status.get("SQL_Remaining_Delay", "0"))) + "s")
     table.add_row("Retrieved GTID",  status.get("Retrieved_Gtid_Set", "")[:80] or "—")
     table.add_row("Executed GTID",   status.get("Executed_Gtid_Set", "")[:80] or "—")
 
@@ -646,7 +656,10 @@ def start_replication(replica_conn):
               help="Privileged admin username (overrides MYSQL_ROOT_USER in .env).")
 @click.option("--admin-password", "-p", default=None,
               help="Privileged admin password (overrides MYSQL_ROOT_PASSWORD in .env).")
-def main(master: str, replica: str, admin_user: str | None, admin_password: str | None):
+@click.option("--delay", "-d", default=0, type=int,
+              help="Replication delay in seconds (default: 0 = no delay).")
+def main(master: str, replica: str, admin_user: str | None, admin_password: str | None,
+         delay: int):
     """
     MySQL Replication Manager — set up a replica from a running master.
 
@@ -722,7 +735,7 @@ def main(master: str, replica: str, admin_user: str | None, admin_password: str 
         expand=False,
     ))
 
-    configure_replication(replica_conn, master_host, master_port)
+    configure_replication(replica_conn, master_host, master_port, delay)
     start_replication(replica_conn)
 
     # ── Cleanup ─────────────────────────────────────────────────────────
