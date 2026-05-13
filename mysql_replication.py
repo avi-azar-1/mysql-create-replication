@@ -560,7 +560,7 @@ def configure_replication(replica_conn, master_host: str, master_port: int,
         "SOURCE_PASSWORD = %s, "
         "SOURCE_AUTO_POSITION = 1, "
         "SOURCE_CONNECT_RETRY = 1, "
-        "SOURCE_CONNECT_RETRY_COUNT = 86400"
+        "SOURCE_RETRY_COUNT = 86400"
     )
     params = [master_host, port, repl_user, repl_password]
 
