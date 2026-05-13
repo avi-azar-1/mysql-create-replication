@@ -101,7 +101,7 @@ def _server_info(conn: mysql.connector.MySQLConnection) -> dict:
     # Active non-system connections (exclude our own and system threads)
     cur.execute(
         "SELECT COUNT(*) AS cnt FROM information_schema.processlist "
-        "WHERE user NOT IN ('system user', 'event_scheduler', %s) "
+        "WHERE user NOT IN ('system user', 'event_scheduler','pmm','orc_client_user', %s) "
         "AND command != 'Daemon' "
         "AND id != CONNECTION_ID()",
         (conn.user,),
