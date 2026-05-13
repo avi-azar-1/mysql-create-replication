@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import time
+import threading
 
 import click
 import mysql.connector
@@ -22,6 +23,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
+from rich.live import Live
 from rich import box
 
 # ── Initialise ──────────────────────────────────────────────────────────────
@@ -86,6 +88,81 @@ def connect(host: str, port: int, user: str, password: str,
         sys.exit(1)
 
 
+# ── Pre-flight — Ensure required users exist ───────────────────────────────
+
+def _uninstall_validate_password(conn: mysql.connector.MySQLConnection, label: str):
+    """Remove the validate_password component if it is loaded."""
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM mysql.component "
+        "WHERE component_urn LIKE '%%validate_password%%'"
+    )
+    if cur.fetchone()["cnt"] > 0:
+        console.print(f"[dim]  Removing validate_password component on {label}…[/]")
+        try:
+            cur.execute("UNINSTALL COMPONENT 'file://component_validate_password'")
+            conn.commit()
+            console.print(f"[bold green]  ✔[/] validate_password removed on {label}.")
+        except mysql.connector.Error as err:
+            console.print(f"[yellow]  ⚠  Could not remove validate_password on {label}: {err}[/]")
+    else:
+        console.print(f"[dim]  validate_password not installed on {label} — OK[/]")
+    cur.close()
+
+
+def _user_exists(cur, user: str) -> bool:
+    """Check whether a MySQL user account exists (any host)."""
+    cur.execute("SELECT COUNT(*) AS cnt FROM mysql.user WHERE user = %s", (user,))
+    return cur.fetchone()["cnt"] > 0
+
+
+def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str):
+    """
+    Ensure clone and replication users exist on the master.
+
+    * Removes component_validate_password if installed.
+    * Creates clone_user with BACKUP_ADMIN if missing.
+    * Creates repl_user with REPLICATION SLAVE, REPLICATION CLIENT if missing.
+    """
+    console.print()
+    console.print(Panel(
+        "[bold]Pre-flight — Validate Password & User Provisioning[/]",
+        border_style="cyan",
+        expand=False,
+    ))
+
+    # ── Remove validate_password ────────────────────────────────────────
+    _uninstall_validate_password(master_conn, master_label)
+
+    clone_user, clone_password = get_clone_creds()
+    repl_user, repl_password = get_repl_creds()
+    cur = master_conn.cursor(dictionary=True)
+
+    # ── Clone user ──────────────────────────────────────────────────────
+    if _user_exists(cur, clone_user):
+        console.print(f"[dim]  Clone user [yellow]{clone_user}[/] already exists — OK[/]")
+    else:
+        console.print(f"[dim]  Creating clone user [yellow]{clone_user}[/]…[/]")
+        cur.execute(f"CREATE USER %s@'%%' IDENTIFIED BY %s", (clone_user, clone_password))
+        cur.execute(f"GRANT BACKUP_ADMIN ON *.* TO %s@'%%'", (clone_user,))
+        master_conn.commit()
+        console.print(f"[bold green]  ✔[/] Clone user [yellow]{clone_user}[/] created with BACKUP_ADMIN.")
+
+    # ── Replication user ────────────────────────────────────────────────
+    if _user_exists(cur, repl_user):
+        console.print(f"[dim]  Replication user [yellow]{repl_user}[/] already exists — OK[/]")
+    else:
+        console.print(f"[dim]  Creating replication user [yellow]{repl_user}[/]…[/]")
+        cur.execute(f"CREATE USER %s@'%%' IDENTIFIED BY %s", (repl_user, repl_password))
+        cur.execute(f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%%'", (repl_user,))
+        master_conn.commit()
+        console.print(f"[bold green]  ✔[/] Replication user [yellow]{repl_user}[/] created "
+                       "with REPLICATION SLAVE, REPLICATION CLIENT.")
+
+    cur.close()
+    console.print()
+
+
 # ── Step 1 — Verify servers ────────────────────────────────────────────────
 
 def _server_info(conn: mysql.connector.MySQLConnection) -> dict:
@@ -95,7 +172,7 @@ def _server_info(conn: mysql.connector.MySQLConnection) -> dict:
     cur.execute("SELECT @@hostname AS hostname, @@server_id AS server_id, "
                 "@@read_only AS read_only, @@super_read_only AS super_read_only, "
                 "@@server_uuid AS server_uuid, @@version AS version, "
-                "@@port AS port")
+                "@@port AS port, @@gtid_mode AS gtid_mode")
     info = cur.fetchone()
 
     # Active non-system connections (exclude our own and system threads)
@@ -146,6 +223,7 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
         ("Server ID",         str(master_info["server_id"]),      str(replica_info["server_id"])),
         ("Version",           master_info["version"],             replica_info["version"]),
         ("Port",              str(master_info["port"]),            str(replica_info["port"])),
+        ("GTID Mode",         str(master_info["gtid_mode"]),       str(replica_info["gtid_mode"])),
         ("read_only",         str(master_info["read_only"]),      str(replica_info["read_only"])),
         ("super_read_only",   str(master_info["super_read_only"]),str(replica_info["super_read_only"])),
         ("Active connections",str(master_info["active_connections"]),str(replica_info["active_connections"])),
@@ -156,6 +234,38 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
 
     console.print()
     console.print(table)
+
+    # ── Server-ID collision check ────────────────────────────────────────
+    if master_info["server_id"] == replica_info["server_id"]:
+        console.print()
+        console.print(Panel(
+            f"  ✗  Both servers have [bold]server_id = {master_info['server_id']}[/]\n"
+            f"     Each server in a replication topology must have a unique server-id.\n"
+            f"     Update [cyan]my.cnf[/] on one of the servers and restart MySQL.",
+            title="[bold red]Server-ID Check — FAILED[/]",
+            border_style="red",
+            expand=False,
+        ))
+        sys.exit(1)
+
+    # ── GTID mode check ─────────────────────────────────────────────────
+    gtid_problems = []
+    if master_info["gtid_mode"] != "ON":
+        gtid_problems.append(f"Master ({master_host}): gtid_mode = [yellow]{master_info['gtid_mode']}[/]")
+    if replica_info["gtid_mode"] != "ON":
+        gtid_problems.append(f"Replica ({replica_host}): gtid_mode = [yellow]{replica_info['gtid_mode']}[/]")
+
+    if gtid_problems:
+        console.print()
+        console.print(Panel(
+            "\n".join(f"  ✗  {p}" for p in gtid_problems) + "\n\n"
+            "     This tool requires GTID-based replication.\n"
+            "     Set [cyan]gtid_mode=ON[/] and [cyan]enforce_gtid_consistency=ON[/] in my.cnf.",
+            title="[bold red]GTID Check — FAILED[/]",
+            border_style="red",
+            expand=False,
+        ))
+        sys.exit(1)
 
     # ── Safety checks on the replica ────────────────────────────────────
     console.print()
@@ -242,22 +352,137 @@ def clone_from_master(replica_conn, master_host: str, master_port: int):
     clone_user, clone_password = get_clone_creds()
     port = master_port
 
-    cur = replica_conn.cursor()
+    cur = replica_conn.cursor(dictionary=True)
+
+    # Ensure the clone plugin is installed on the replica
+    cur.execute("SELECT COUNT(*) AS cnt FROM information_schema.plugins "
+                "WHERE plugin_name = 'clone' AND plugin_status = 'ACTIVE'")
+    if cur.fetchone()["cnt"] == 0:
+        console.print("[dim]Installing clone plugin on replica…[/]")
+        try:
+            cur.execute("INSTALL PLUGIN clone SONAME 'mysql_clone.so'")
+            replica_conn.commit()
+            console.print("[bold green]✔[/] Clone plugin installed on replica.")
+        except mysql.connector.Error as err:
+            console.print(f"[bold red]✗[/] Failed to install clone plugin: {err}")
+            sys.exit(1)
+    else:
+        console.print("[dim]Clone plugin already installed on replica — OK[/]")
 
     # Set the donor (master) credentials on the replica so the clone plugin
     # can authenticate against the master.
-    console.print(f"\n[dim]Setting donor credentials for clone plugin…[/]")
+    console.print(f"[dim]Setting donor credentials for clone plugin…[/]")
     cur.execute("SET GLOBAL clone_valid_donor_list = %s", (f"{master_host}:{port}",))
 
     console.print(f"[bold cyan]⏳ Cloning data from [green]{master_host}:{port}[/] "
                    "— this may take a while …[/]\n")
 
+    # Run the blocking CLONE INSTANCE in a background thread so we can
+    # poll performance_schema.clone_progress from the main thread.
+    clone_result: dict = {"error": None, "done": False}
+
+    def _run_clone():
+        try:
+            clone_cur = replica_conn.cursor()
+            clone_cur.execute(
+                "CLONE INSTANCE FROM %s@%s:%s IDENTIFIED BY %s",
+                (clone_user, master_host, port, clone_password),
+            )
+            clone_cur.close()
+        except mysql.connector.Error as err:
+            clone_result["error"] = err
+        finally:
+            clone_result["done"] = True
+
+    clone_thread = threading.Thread(target=_run_clone, daemon=True)
+    clone_thread.start()
+
+    # Open a second connection to poll clone progress (the first is busy
+    # executing CLONE INSTANCE).
+    root_user, root_password = get_root_creds()
     try:
-        cur.execute(
-            "CLONE INSTANCE FROM %s@%s:%s IDENTIFIED BY %s",
-            (clone_user, master_host, port, clone_password),
+        monitor_conn = mysql.connector.connect(
+            host=replica_conn.server_host,
+            port=replica_conn.server_port,
+            user=root_user,
+            password=root_password,
+            connection_timeout=10,
         )
-    except mysql.connector.Error as err:
+    except mysql.connector.Error:
+        # If we can't open a monitor connection, fall back to waiting blindly
+        monitor_conn = None
+
+    def _build_progress_table():
+        """Query clone_progress and return a Rich Table."""
+        tbl = Table(
+            title="Clone Progress",
+            box=box.SIMPLE_HEAVY,
+            title_style="bold cyan",
+            header_style="bold",
+        )
+        tbl.add_column("Stage", style="dim")
+        tbl.add_column("State")
+        tbl.add_column("Estimated", justify="right")
+        tbl.add_column("Transferred", justify="right")
+        tbl.add_column("Done %", justify="right")
+
+        try:
+            mon_cur = monitor_conn.cursor(dictionary=True)
+            mon_cur.execute(
+                "SELECT stage, state, "
+                "       CAST(estimate AS UNSIGNED) AS estimate, "
+                "       CAST(data AS UNSIGNED) AS data "
+                "FROM performance_schema.clone_progress"
+            )
+            rows = mon_cur.fetchall()
+            mon_cur.close()
+        except mysql.connector.Error:
+            return tbl  # return empty table on transient errors
+
+        for r in rows:
+            est = r["estimate"] or 0
+            dat = r["data"] or 0
+            pct = f"{dat / est * 100:.1f}%" if est > 0 else "—"
+
+            est_mb = f"{est / 1048576:.1f} MB" if est > 0 else "—"
+            dat_mb = f"{dat / 1048576:.1f} MB" if dat > 0 else "—"
+
+            state_style = "green" if r["state"] == "Completed" else "yellow"
+            tbl.add_row(
+                r["stage"],
+                f"[{state_style}]{r['state']}[/]",
+                est_mb,
+                dat_mb,
+                pct,
+            )
+        return tbl
+
+    # Poll progress until the clone thread finishes or the connection drops
+    if monitor_conn:
+        try:
+            with Live(console=console, refresh_per_second=1) as live:
+                while not clone_result["done"]:
+                    live.update(_build_progress_table())
+                    time.sleep(2)
+                # One final refresh
+                live.update(_build_progress_table())
+        except Exception:
+            pass  # connection lost during server restart — expected
+        finally:
+            try:
+                monitor_conn.close()
+            except Exception:
+                pass
+    else:
+        # No monitor connection — just wait
+        clone_thread.join()
+
+    # Wait for the thread to finish
+    clone_thread.join(timeout=10)
+
+    # Check for errors from the clone thread
+    if clone_result["error"]:
+        err = clone_result["error"]
         # Error 3707: the server restarts after a successful clone.
         # Error 2013: Lost connection (server restart).
         if err.errno in (3707, 2013):
@@ -267,12 +492,13 @@ def clone_from_master(replica_conn, master_host: str, master_port: int):
             sys.exit(1)
 
     cur.close()
-    console.print("[bold green]✔[/] Clone command issued successfully.")
+    console.print("[bold green]✔[/] Clone completed successfully.")
 
 
-def wait_for_server(host: str, port: int, retries: int = 30, delay: int = 5):
+def wait_for_server(host: str, port: int, admin_user: str, admin_password: str,
+                    retries: int = 30, delay: int = 5):
     """Wait for a MySQL server to become available after a restart."""
-    root_user, root_password = get_root_creds()
+    root_user, root_password = admin_user, admin_password
 
     with Progress(
         SpinnerColumn("dots"),
@@ -416,7 +642,11 @@ def start_replication(replica_conn):
               help="Master (source) server in host:port format (port defaults to 3306).")
 @click.option("--replica", "-r", required=True,
               help="Target replica server in host:port format (port defaults to 3306).")
-def main(master: str, replica: str):
+@click.option("--admin-user", "-u", default=None,
+              help="Privileged admin username (overrides MYSQL_ROOT_USER in .env).")
+@click.option("--admin-password", "-p", default=None,
+              help="Privileged admin password (overrides MYSQL_ROOT_PASSWORD in .env).")
+def main(master: str, replica: str, admin_user: str | None, admin_password: str | None):
     """
     MySQL Replication Manager — set up a replica from a running master.
 
@@ -445,7 +675,15 @@ def main(master: str, replica: str):
         expand=False,
     ))
 
-    root_user, root_password = get_root_creds()
+    # CLI flags override .env credentials
+    if admin_user and admin_password:
+        root_user, root_password = admin_user, admin_password
+    elif admin_user or admin_password:
+        console.print("[bold red]✗[/] Both --admin-user and --admin-password must be "
+                       "provided together.")
+        sys.exit(1)
+    else:
+        root_user, root_password = get_root_creds()
 
     # ── Connect to both servers ─────────────────────────────────────────
     console.print(f"\n[dim]Connecting to master [cyan]{master_label}[/] …[/]")
@@ -453,6 +691,9 @@ def main(master: str, replica: str):
 
     console.print(f"[dim]Connecting to replica [cyan]{replica_label}[/] …[/]")
     replica_conn = connect(replica_host, replica_port, root_user, root_password)
+
+    # ── Pre-flight — Ensure users exist on master ───────────────────────
+    ensure_users(master_conn, master_label)
 
     # ── Step 1 — Verify ────────────────────────────────────────────────
     verify_servers(master_conn, replica_conn, master_label, replica_label)
@@ -467,14 +708,11 @@ def main(master: str, replica: str):
 
     reset_replica(replica_conn)
 
-    # Verify GTID is enabled on master before cloning
-    get_master_gtid_status(master_conn)
-
     clone_from_master(replica_conn, master_host, master_port)
 
     # After clone the replica restarts — reconnect
     console.print()
-    replica_conn = wait_for_server(replica_host, replica_port)
+    replica_conn = wait_for_server(replica_host, replica_port, root_user, root_password)
 
     # ── Step 3 — Configure & Start ──────────────────────────────────────
     console.print()

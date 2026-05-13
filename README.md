@@ -14,22 +14,10 @@ and starting GTID-based replication — all in one command.
 | **my.cnf** | Already configured for replication (`server-id`, `log_bin`, etc.) |
 | **Network** | Replica can reach master on the MySQL port |
 
-### Required MySQL Users
-
-Create these users on **both** servers (or at least as noted):
-
-```sql
--- Root / admin user (both servers)
--- (usually already exists)
-
--- Clone user (on the master — the donor)
-CREATE USER 'clone_user'@'%' IDENTIFIED BY 'your_clone_password';
-GRANT BACKUP_ADMIN ON *.* TO 'clone_user'@'%';
-
--- Replication user (on the master)
-CREATE USER 'repl_user'@'%' IDENTIFIED BY 'your_repl_password';
-GRANT REPLICATION SLAVE ON *.* TO 'repl_user'@'%';
-```
+> **Note:** The tool will automatically create the clone and replication users on
+> the master if they don't exist (using the credentials from `.env`). It will also
+> remove the `component_validate_password` plugin if installed, to avoid password
+> policy errors during user creation.
 
 ## Setup
 
@@ -63,23 +51,36 @@ Servers are specified in `host:port` format. Port defaults to **3306** if omitte
 |---|---|---|
 | `--master` | `-m` | Master (source) server as `host:port` |
 | `--replica` | `-r` | Target replica server as `host:port` |
+| `--admin-user` | `-u` | Privileged admin username (overrides `MYSQL_ROOT_USER` in `.env`) |
+| `--admin-password` | `-p` | Privileged admin password (overrides `MYSQL_ROOT_PASSWORD` in `.env`) |
 | `--help` | `-h` | Show help message |
+
+> Both `--admin-user` and `--admin-password` must be provided together.
+> If neither is specified, the tool falls back to the `.env` values.
 
 ### Examples
 
 ```bash
-# Both servers on default port 3306
+# Both servers on default port 3306, admin creds from .env
 python mysql_replication.py -m db-master-01 -r db-replica-02
 
 # Custom ports
 python mysql_replication.py -m db-master-01:3307 -r db-replica-02:3308
+
+# Override admin credentials via CLI
+python mysql_replication.py -m db-master-01 -r db-replica-02 -u dba_admin -p secret123
 ```
 
 ## What It Does
 
 ```
+Pre-flight — User Provisioning
+  ├─ Remove component_validate_password (if installed)
+  ├─ Ensure clone user exists on master (create + BACKUP_ADMIN if missing)
+  └─ Ensure replication user exists on master (create + REPLICATION SLAVE,
+     REPLICATION CLIENT if missing)
+
 Phase 1 — Verify
-  ├─ Connect to both servers
   ├─ Display server topology (hostname, version, server-id, UUID, …)
   ├─ Check the replica for active connections & running queries
   └─ Prompt for confirmation (destructive operation warning)
@@ -98,15 +99,16 @@ Phase 3 — Configure & Start Replication
 
 ## Configuration
 
-All credentials are read from a `.env` file in the project root:
+Credentials are read from a `.env` file in the project root.
+The admin user can optionally be overridden via CLI flags.
 
 | Variable | Purpose |
 |---|---|
-| `MYSQL_ROOT_USER` | Admin user for connecting to both servers |
-| `MYSQL_ROOT_PASSWORD` | Admin password |
-| `MYSQL_CLONE_USER` | User for clone plugin authentication |
+| `MYSQL_ROOT_USER` | Admin user for connecting to both servers (overridden by `--admin-user`) |
+| `MYSQL_ROOT_PASSWORD` | Admin password (overridden by `--admin-password`) |
+| `MYSQL_CLONE_USER` | Clone user — created automatically if missing |
 | `MYSQL_CLONE_PASSWORD` | Clone user password |
-| `MYSQL_REPL_USER` | Replication user configured in `CHANGE REPLICATION SOURCE` |
+| `MYSQL_REPL_USER` | Replication user — created automatically if missing |
 | `MYSQL_REPL_PASSWORD` | Replication user password |
 
 ## License
