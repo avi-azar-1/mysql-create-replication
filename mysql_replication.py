@@ -281,6 +281,12 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
             f"[yellow]{replica_info['running_queries']}[/] query(ies) currently "
             f"running on the replica"
         )
+    if not replica_info["read_only"]:
+        problems.append(
+            "Replica is [bold]not[/] in read_only mode — set "
+            "[cyan]read_only=ON[/] in my.cnf or run "
+            "[cyan]SET GLOBAL read_only=1[/] before proceeding"
+        )
 
     if problems:
         console.print(Panel(
@@ -295,7 +301,8 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
     else:
         console.print(Panel(
             "  ✔  No active user connections on the replica\n"
-            "  ✔  No running queries on the replica",
+            "  ✔  No running queries on the replica\n"
+            "  ✔  Replica is in read_only mode",
             title="[bold green]Replica Safety Check — PASSED[/]",
             border_style="green",
             expand=False,
