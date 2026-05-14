@@ -17,7 +17,7 @@ and starting GTID-based replication — all in one command.
 > **Note:** The tool will automatically:
 > - Remove `component_validate_password` if installed (avoids password policy errors)
 > - Install the clone plugin on the replica if not already present
-> - Create the clone and replication users on the master if they don't exist
+> - Create the clone and replication users on the master if they don't exist (falling back to MySQL 8.0 `REPLICATION_SLAVE_ADMIN` if the classic `REPLICATION SLAVE` privilege fails).
 
 ## Setup
 
@@ -78,6 +78,14 @@ python mysql_replication.py -m db-master-01 -r db-replica-02 -d 3600
 python mysql_replication.py -m db-master-01:3307 -r db-replica-02:3308 -u dba_admin -p secret123 -d 1800
 ```
 
+### Orchestrator Status Tool
+
+A standalone tool `orchestrator_status.py` is included to view the topology of a MySQL cluster managed by Orchestrator. It is also called automatically by the main script if Orchestrator is configured.
+
+```bash
+python orchestrator_status.py --host <orchestrator_host> --cluster <cluster_alias>
+```
+
 ## What It Does
 
 ```
@@ -91,7 +99,9 @@ Phase 1 — Verify
   ├─ Display server topology (hostname, version, server-id, UUID, GTID mode, …)
   ├─ Check server-id is unique between master and replica (fail if equal)
   ├─ Check GTID mode is ON on both servers (fail if not)
-  ├─ Check the replica for active connections & running queries
+  ├─ Check the replica for active connections, running queries, and that `read_only` is ON
+  ├─ Trigger Orchestrator discovery for both nodes and wait 3s for sync (if configured)
+  ├─ Display current Orchestrator cluster topology (if configured)
   └─ Prompt for confirmation (destructive operation warning)
 
 Phase 2 — Reset & Clone
@@ -102,10 +112,14 @@ Phase 2 — Reset & Clone
   └─ Wait for replica to restart after clone
 
 Phase 3 — Configure & Start Replication
-  ├─ CHANGE REPLICATION SOURCE TO … SOURCE_AUTO_POSITION = 1
+  ├─ CHANGE REPLICATION SOURCE TO … SOURCE_AUTO_POSITION = 1, GET_SOURCE_PUBLIC_KEY = 1
   │    └─ SOURCE_DELAY = N  (if --delay is specified)
   ├─ START REPLICA
   └─ Display replication health (IO/SQL threads, lag, SQL delay, GTID sets)
+
+Phase 4 — Orchestrator Integration (Optional)
+  ├─ Wait 3s for sync
+  └─ Display updated Orchestrator cluster topology
 ```
 
 ## Configuration
@@ -121,6 +135,7 @@ The admin user can optionally be overridden via CLI flags.
 | `MYSQL_CLONE_PASSWORD` | Clone user password |
 | `MYSQL_REPL_USER` | Replication user — created automatically on master if missing |
 | `MYSQL_REPL_PASSWORD` | Replication user password |
+| `ORCHESTRATOR_HOST` | *(Optional)* Orchestrator API host. If set, triggers node discovery and displays cluster topology before and after changes. |
 
 ## License
 
