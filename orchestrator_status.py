@@ -21,6 +21,32 @@ from rich import box
 console = Console()
 
 
+def discover_new_node(orchestrator_host: str, db_host: str, db_port: int | str):
+    """
+    Triggers Orchestrator to discover a new MySQL instance.
+    """
+    url = f"http://{orchestrator_host}:3000/api/discover/{db_host}/{db_port}"
+    
+    console.print(f"[dim]Requesting discovery for [cyan]{db_host}:{db_port}[/] on Orchestrator…[/]")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.ConnectionError:
+        console.print(f"[bold red]✗[/] Could not connect to Orchestrator at "
+                       f"[cyan]{orchestrator_host}:3000[/].")
+        sys.exit(1)
+    except requests.exceptions.HTTPError as err:
+        console.print(f"[bold red]✗[/] Orchestrator returned an error during discovery: {err}")
+        sys.exit(1)
+    except requests.exceptions.RequestException as err:
+        console.print(f"[bold red]✗[/] Discovery request failed: {err}")
+        sys.exit(1)
+
+    instance_key = data.get("Key", {})
+    hostname = instance_key.get("Hostname", "Unknown")
+    console.print(f"[bold green]✔[/] Success! Orchestrator is now tracking: [cyan]{hostname}[/]")
+
 # ── Data fetching ────────────────────────────────────────────────────────────
 
 def get_orchestrator_nodes(orchestrator_host: str, cluster_alias: str) -> list[dict]:

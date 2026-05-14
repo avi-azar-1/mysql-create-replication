@@ -26,7 +26,7 @@ from rich.prompt import Confirm
 from rich.live import Live
 from rich import box
 
-from orchestrator_status import get_orchestrator_nodes, print_topology as orch_print_topology
+from orchestrator_status import get_orchestrator_nodes, print_topology as orch_print_topology, discover_new_node
 
 # ── Initialise ──────────────────────────────────────────────────────────────
 load_dotenv()
@@ -350,6 +350,34 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
             border_style="green",
             expand=False,
         ))
+
+    # ── Orchestrator topology BEFORE (optional) ─────────────────────────────────
+    orch_host = os.getenv("ORCHESTRATOR_HOST")
+    orch_cluster = master_host  # cluster alias = master hostname (Orchestrator convention)
+
+    if orch_host:
+        console.print()
+        console.print(Panel(
+            "[bold]Orchestrator — Current Cluster Topology[/]",
+            border_style="cyan",
+            expand=False,
+        ))
+        try:
+            # Trigger discovery so orchestrator knows about the instances
+            discover_new_node(orch_host, master_host, master_port)
+            discover_new_node(orch_host, replica_host, replica_port)
+            
+            console.print(f"[dim]Fetching topology for cluster [yellow]{orch_cluster}[/] "
+                           f"from [cyan]{orch_host}:3000[/] (waiting 3s for sync)…[/]")
+            time.sleep(3)
+            nodes = get_orchestrator_nodes(orch_host, orch_cluster)
+            if nodes:
+                orch_print_topology(nodes, orch_cluster, orch_host)
+            else:
+                console.print("[yellow]⚠  Orchestrator returned no nodes — "
+                               "the cluster might be empty or not yet discovered.[/]")
+        except SystemExit:
+            pass  # Error was already printed, just skip topology display
 
     # ── Warning banner ──────────────────────────────────────────────────
     console.print()
@@ -813,8 +841,9 @@ def main(master: str, replica: str, admin_user: str | None, admin_password: str 
             expand=False,
         ))
         console.print(f"[dim]Fetching topology for cluster [yellow]{orch_cluster}[/] "
-                       f"from [cyan]{orch_host}:3000[/] …[/]")
+                       f"from [cyan]{orch_host}:3000[/] (waiting 3s for sync)…[/]")
         try:
+            time.sleep(3)
             nodes = get_orchestrator_nodes(orch_host, orch_cluster)
             if nodes:
                 orch_print_topology(nodes, orch_cluster, orch_host)
