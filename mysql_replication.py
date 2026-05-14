@@ -143,8 +143,8 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
         console.print(f"[dim]  Clone user [yellow]{clone_user}[/] already exists — OK[/]")
     else:
         console.print(f"[dim]  Creating clone user [yellow]{clone_user}[/]…[/]")
-        cur.execute(f"CREATE USER %s@'%%' IDENTIFIED BY %s", (clone_user, clone_password))
-        cur.execute(f"GRANT BACKUP_ADMIN ON *.* TO %s@'%%'", (clone_user,))
+        cur.execute(f"CREATE USER %s@'%' IDENTIFIED BY %s", (clone_user, clone_password))
+        cur.execute(f"GRANT BACKUP_ADMIN ON *.* TO %s@'%'", (clone_user,))
         master_conn.commit()
         console.print(f"[bold green]  ✔[/] Clone user [yellow]{clone_user}[/] created with BACKUP_ADMIN.")
 
@@ -153,8 +153,8 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
         console.print(f"[dim]  Replication user [yellow]{repl_user}[/] already exists — OK[/]")
     else:
         console.print(f"[dim]  Creating replication user [yellow]{repl_user}[/]…[/]")
-        cur.execute(f"CREATE USER %s@'%%' IDENTIFIED BY %s", (repl_user, repl_password))
-        cur.execute(f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%%'", (repl_user,))
+        cur.execute(f"CREATE USER %s@'%' IDENTIFIED BY %s", (repl_user, repl_password))
+        cur.execute(f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%'", (repl_user,))
         master_conn.commit()
         console.print(f"[bold green]  ✔[/] Replication user [yellow]{repl_user}[/] created "
                        "with REPLICATION SLAVE, REPLICATION CLIENT.")
