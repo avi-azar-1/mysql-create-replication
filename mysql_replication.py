@@ -26,6 +26,8 @@ from rich.prompt import Confirm
 from rich.live import Live
 from rich import box
 
+from orchestrator_status import get_orchestrator_nodes, print_topology as orch_print_topology
+
 # ── Initialise ──────────────────────────────────────────────────────────────
 load_dotenv()
 console = Console()
@@ -136,25 +138,66 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
 
     clone_user, clone_password = get_clone_creds()
     repl_user, repl_password = get_repl_creds()
-    cur = master_conn.cursor(dictionary=True)
 
     # ── Clone user ──────────────────────────────────────────────────────
-    if _user_exists(cur, clone_user):
+    cur = master_conn.cursor(dictionary=True)
+    clone_exists = _user_exists(cur, clone_user)
+    cur.close()
+
+    if clone_exists:
         console.print(f"[dim]  Clone user [yellow]{clone_user}[/] already exists — OK[/]")
     else:
         console.print(f"[dim]  Creating clone user [yellow]{clone_user}[/]…[/]")
-        cur.execute(f"CREATE USER %s@'%' IDENTIFIED BY %s", (clone_user, clone_password))
-        cur.execute(f"GRANT BACKUP_ADMIN ON *.* TO %s@'%'", (clone_user,))
+        cur = master_conn.cursor()
+        cur.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (clone_user, clone_password))
+        cur.execute("GRANT BACKUP_ADMIN ON *.* TO %s@'%%'", (clone_user,))
+        cur.close()
         master_conn.commit()
         console.print(f"[bold green]  ✔[/] Clone user [yellow]{clone_user}[/] created with BACKUP_ADMIN.")
 
     # ── Replication user ────────────────────────────────────────────────
-    if _user_exists(cur, repl_user):
+    cur = master_conn.cursor(dictionary=True)
+    repl_exists = _user_exists(cur, repl_user)
+    cur.close()
+
+    if repl_exists:
         console.print(f"[dim]  Replication user [yellow]{repl_user}[/] already exists — OK[/]")
     else:
         console.print(f"[dim]  Creating replication user [yellow]{repl_user}[/]…[/]")
-        cur.execute(f"CREATE USER %s@'%' IDENTIFIED BY %s", (repl_user, repl_password))
-        cur.execute(f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%'", (repl_user,))
+        cur = master_conn.cursor()
+        cur.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (repl_user, repl_password))
+        # Try the classic static privileges first; fall back to MySQL 8.0 dynamic privilege
+        # if the admin account lacks GRANT OPTION for the static privilege remotely.
+        try:
+            cur.execute(
+                "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%%'",
+                (repl_user,),
+            )
+        except mysql.connector.Error as grant_err:
+            if grant_err.errno == 1045:  # Access denied
+                console.print(
+                    "[yellow]  ⚠  GRANT REPLICATION SLAVE denied — retrying with "
+                    "MySQL 8.0 dynamic privilege REPLICATION_SLAVE_ADMIN…[/]"
+                )
+                try:
+                    cur.execute(
+                        "GRANT REPLICATION_SLAVE_ADMIN, REPLICATION_CLIENT ON *.* "
+                        "TO %s@'%%'",
+                        (repl_user,),
+                    )
+                except mysql.connector.Error as dyn_err:
+                    cur.close()
+                    console.print(
+                        f"[bold red]  ✗[/] Could not grant replication privileges: {dyn_err}\n"
+                        f"     Grant manually:\n"
+                        f"     [cyan]GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* "
+                        f"TO '{repl_user}'@'%';[/]"
+                    )
+                    sys.exit(1)
+            else:
+                cur.close()
+                raise
+        cur.close()
         master_conn.commit()
         console.print(f"[bold green]  ✔[/] Replication user [yellow]{repl_user}[/] created "
                        "with REPLICATION SLAVE, REPLICATION CLIENT.")
@@ -757,6 +800,34 @@ def main(master: str, replica: str, admin_user: str | None, admin_password: str 
         border_style="green",
         expand=False,
     ))
+
+    # ── Orchestrator topology (optional) ──────────────────────────────────
+    orch_host = os.getenv("ORCHESTRATOR_HOST")
+    orch_cluster = master_host  # cluster alias = master hostname (Orchestrator convention)
+
+    if orch_host:
+        console.print()
+        console.print(Panel(
+            "[bold]Orchestrator — Updated Cluster Topology[/]",
+            border_style="cyan",
+            expand=False,
+        ))
+        console.print(f"[dim]Fetching topology for cluster [yellow]{orch_cluster}[/] "
+                       f"from [cyan]{orch_host}:3000[/] …[/]")
+        try:
+            nodes = get_orchestrator_nodes(orch_host, orch_cluster)
+            if nodes:
+                orch_print_topology(nodes, orch_cluster, orch_host)
+            else:
+                console.print("[yellow]⚠  Orchestrator returned no nodes — "
+                               "topology may not have updated yet.[/]")
+        except SystemExit:
+            pass  # orchestrator_status already printed the error
+    else:
+        console.print(
+            "[dim]Tip: set ORCHESTRATOR_HOST and ORCHESTRATOR_CLUSTER in .env "
+            "to display cluster topology after replication setup.[/]"
+        )
 
 
 if __name__ == "__main__":
