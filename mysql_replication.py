@@ -364,8 +364,8 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
         ))
         try:
             # Trigger discovery so orchestrator knows about the instances
-            discover_new_node(orch_host, master_host, master_port)
-            discover_new_node(orch_host, replica_host, replica_port)
+            discover_new_node(orch_host, master_host, master_info["port"])
+            discover_new_node(orch_host, replica_host, replica_info["port"])
             
             console.print(f"[dim]Fetching topology for cluster [yellow]{orch_cluster}[/] "
                            f"from [cyan]{orch_host}:3000[/] (waiting 3s for sync)…[/]")
