@@ -54,7 +54,7 @@ def get_orchestrator_nodes(orchestrator_host: str, cluster_alias: str) -> list[d
     Fetches all nodes in a cluster from the Orchestrator API and returns a
     structured list ready for display.
     """
-    url = f"http://{orchestrator_host}:3000/api/cluster-nodes/{cluster_alias}"
+    url = f"http://{orchestrator_host}:3000/api/cluster/{cluster_alias}"
 
     try:
         response = requests.get(url, timeout=10)

@@ -97,7 +97,7 @@ def _uninstall_validate_password(conn: mysql.connector.MySQLConnection, label: s
     cur = conn.cursor(dictionary=True)
     cur.execute(
         "SELECT COUNT(*) AS cnt FROM mysql.component "
-        "WHERE component_urn LIKE '%%validate_password%%'"
+        "WHERE component_urn LIKE '%validate_password%'"
     )
     if cur.fetchone()["cnt"] > 0:
         console.print(f"[dim]  Removing validate_password component on {label}…[/]")
@@ -149,8 +149,8 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
     else:
         console.print(f"[dim]  Creating clone user [yellow]{clone_user}[/]…[/]")
         cur = master_conn.cursor()
-        cur.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (clone_user, clone_password))
-        cur.execute("GRANT BACKUP_ADMIN ON *.* TO %s@'%%'", (clone_user,))
+        cur.execute("CREATE USER %s@'%' IDENTIFIED BY %s", (clone_user, clone_password))
+        cur.execute("GRANT BACKUP_ADMIN ON *.* TO %s@'%'", (clone_user,))
         cur.close()
         master_conn.commit()
         console.print(f"[bold green]  ✔[/] Clone user [yellow]{clone_user}[/] created with BACKUP_ADMIN.")
@@ -165,12 +165,12 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
     else:
         console.print(f"[dim]  Creating replication user [yellow]{repl_user}[/]…[/]")
         cur = master_conn.cursor()
-        cur.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (repl_user, repl_password))
+        cur.execute("CREATE USER %s@'%' IDENTIFIED BY %s", (repl_user, repl_password))
         # Try the classic static privileges first; fall back to MySQL 8.0 dynamic privilege
         # if the admin account lacks GRANT OPTION for the static privilege remotely.
         try:
             cur.execute(
-                "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%%'",
+                "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO %s@'%'",
                 (repl_user,),
             )
         except mysql.connector.Error as grant_err:
@@ -182,7 +182,7 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
                 try:
                     cur.execute(
                         "GRANT REPLICATION_SLAVE_ADMIN, REPLICATION_CLIENT ON *.* "
-                        "TO %s@'%%'",
+                        "TO %s@'%'",
                         (repl_user,),
                     )
                 except mysql.connector.Error as dyn_err:
@@ -364,8 +364,8 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
         ))
         try:
             # Trigger discovery so orchestrator knows about the instances
-            discover_new_node(orch_host, master_host, master_info["port"])
-            discover_new_node(orch_host, replica_host, replica_info["port"])
+            discover_new_node(orch_host, master_info["hostname"], master_info["port"])
+            discover_new_node(orch_host, replica_info["hostname"], replica_info["port"])
             
             console.print(f"[dim]Fetching topology for cluster [yellow]{orch_cluster}[/] "
                            f"from [cyan]{orch_host}:3000[/] (waiting 3s for sync)…[/]")
