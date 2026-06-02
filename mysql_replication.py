@@ -136,21 +136,32 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
     # ── Remove validate_password ────────────────────────────────────────
     _uninstall_validate_password(master_conn, master_label)
 
-    # ── Grant CLONE_ADMIN to the connecting admin user ──────────────────
+    # ── Grant CLONE_ADMIN, REPLICATION_SLAVE_ADMIN to the connecting admin user ──
     cur = master_conn.cursor(dictionary=True)
     cur.execute("SELECT CURRENT_USER() AS cu")
-    current_user = cur.fetchone()["cu"]  # e.g. root@10.0.0.1
+    current_user_raw = cur.fetchone()["cu"]  # e.g. root@% or root@10.0.0.1
     cur.close()
 
-    console.print(f"[dim]  Granting CLONE_ADMIN, REPLICATION_SLAVE_ADMIN to current user [yellow]{current_user}[/]…[/]")
+    # CURRENT_USER() returns user@host without quotes around the host.
+    # Re-quote both parts to produce valid SQL: `user`@`host`
+    if "@" in current_user_raw:
+        cu_user, cu_host = current_user_raw.split("@", 1)
+    else:
+        cu_user, cu_host = current_user_raw, "%"
+    current_user_sql = f"`{cu_user}`@`{cu_host}`"
+
+    console.print(f"[dim]  Granting CLONE_ADMIN, REPLICATION_SLAVE_ADMIN to current user "
+                   f"[yellow]{current_user_raw}[/]…[/]")
     try:
         cur = master_conn.cursor()
-        cur.execute(f"GRANT CLONE_ADMIN, REPLICATION_SLAVE_ADMIN ON *.* TO {current_user}")
+        cur.execute(f"GRANT CLONE_ADMIN, REPLICATION_SLAVE_ADMIN ON *.* TO {current_user_sql}")
         cur.close()
         master_conn.commit()
-        console.print(f"[bold green]  ✔[/] CLONE_ADMIN, REPLICATION_SLAVE_ADMIN granted to [yellow]{current_user}[/].")
+        console.print(f"[bold green]  ✔[/] CLONE_ADMIN, REPLICATION_SLAVE_ADMIN granted to "
+                       f"[yellow]{current_user_raw}[/].")
     except mysql.connector.Error as err:
-        console.print(f"[yellow]  ⚠  Could not grant admin privileges to {current_user}: {err}[/]")
+        console.print(f"[yellow]  ⚠  Could not grant admin privileges to "
+                       f"{current_user_raw}: {err}[/]")
 
     clone_user, clone_password = get_clone_creds()
     repl_user, repl_password = get_repl_creds()
