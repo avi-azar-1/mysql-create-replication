@@ -142,13 +142,13 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
     current_user = cur.fetchone()["cu"]  # e.g. root@10.0.0.1
     cur.close()
 
-    console.print(f"[dim]  Granting CLONE_ADMIN, REPLICATION_ADMIN to current user [yellow]{current_user}[/]…[/]")
+    console.print(f"[dim]  Granting CLONE_ADMIN, REPLICATION_SLAVE_ADMIN to current user [yellow]{current_user}[/]…[/]")
     try:
         cur = master_conn.cursor()
-        cur.execute(f"GRANT CLONE_ADMIN, REPLICATION_ADMIN ON *.* TO {current_user}")
+        cur.execute(f"GRANT CLONE_ADMIN, REPLICATION_SLAVE_ADMIN ON *.* TO {current_user}")
         cur.close()
         master_conn.commit()
-        console.print(f"[bold green]  ✔[/] CLONE_ADMIN, REPLICATION_ADMIN granted to [yellow]{current_user}[/].")
+        console.print(f"[bold green]  ✔[/] CLONE_ADMIN, REPLICATION_SLAVE_ADMIN granted to [yellow]{current_user}[/].")
     except mysql.connector.Error as err:
         console.print(f"[yellow]  ⚠  Could not grant admin privileges to {current_user}: {err}[/]")
 
