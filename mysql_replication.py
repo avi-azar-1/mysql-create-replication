@@ -475,6 +475,7 @@ def clone_from_master(replica_conn, master_host: str, master_port: int,
     # Run the blocking CLONE INSTANCE in a background thread so we can
     # poll performance_schema.clone_progress from the main thread.
     clone_result: dict = {"error": None, "done": False}
+    clone_start_time = time.time()
 
     def _run_clone():
         try:
@@ -507,8 +508,21 @@ def clone_from_master(replica_conn, master_host: str, master_port: int,
         # If we can't open a monitor connection, fall back to waiting blindly
         monitor_conn = None
 
+    def _format_duration(seconds: float) -> str:
+        """Format seconds into a human-readable duration string."""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m {secs:02d}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+
     def _build_progress_table():
         """Query clone_progress and return a Rich Table."""
+        elapsed = time.time() - clone_start_time
+
         tbl = Table(
             title="Clone Progress",
             box=box.SIMPLE_HEAVY,
@@ -520,6 +534,7 @@ def clone_from_master(replica_conn, master_host: str, master_port: int,
         tbl.add_column("Estimated", justify="right")
         tbl.add_column("Transferred", justify="right")
         tbl.add_column("Done %", justify="right")
+        tbl.add_column("ETA", justify="right")
 
         try:
             mon_cur = monitor_conn.cursor(dictionary=True)
@@ -533,6 +548,21 @@ def clone_from_master(replica_conn, master_host: str, master_port: int,
             mon_cur.close()
         except mysql.connector.Error:
             return tbl  # return empty table on transient errors
+
+        # Compute overall progress across all stages for ETA
+        total_est = sum((r["estimate"] or 0) for r in rows)
+        total_dat = sum((r["data"] or 0) for r in rows)
+        overall_pct = (total_dat / total_est) if total_est > 0 else 0
+
+        if overall_pct > 0 and overall_pct < 1.0:
+            eta_seconds = elapsed * (1.0 - overall_pct) / overall_pct
+            eta_str = _format_duration(eta_seconds)
+        elif overall_pct >= 1.0:
+            eta_str = "done"
+        else:
+            eta_str = "—"
+
+        elapsed_str = _format_duration(elapsed)
 
         for r in rows:
             est = r["estimate"] or 0
@@ -549,7 +579,10 @@ def clone_from_master(replica_conn, master_host: str, master_port: int,
                 est_mb,
                 dat_mb,
                 pct,
+                "",  # per-row ETA left blank — overall shown in caption
             )
+
+        tbl.caption = f"Elapsed: [cyan]{elapsed_str}[/]  |  ETA: [cyan]{eta_str}[/]"
         return tbl
 
     # Poll progress until the clone thread finishes or the connection drops
