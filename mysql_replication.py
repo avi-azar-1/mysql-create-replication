@@ -136,6 +136,22 @@ def ensure_users(master_conn: mysql.connector.MySQLConnection, master_label: str
     # ── Remove validate_password ────────────────────────────────────────
     _uninstall_validate_password(master_conn, master_label)
 
+    # ── Grant CLONE_ADMIN to the connecting admin user ──────────────────
+    cur = master_conn.cursor(dictionary=True)
+    cur.execute("SELECT CURRENT_USER() AS cu")
+    current_user = cur.fetchone()["cu"]  # e.g. root@10.0.0.1
+    cur.close()
+
+    console.print(f"[dim]  Granting CLONE_ADMIN, REPLICATION_ADMIN to current user [yellow]{current_user}[/]…[/]")
+    try:
+        cur = master_conn.cursor()
+        cur.execute(f"GRANT CLONE_ADMIN, REPLICATION_ADMIN ON *.* TO {current_user}")
+        cur.close()
+        master_conn.commit()
+        console.print(f"[bold green]  ✔[/] CLONE_ADMIN, REPLICATION_ADMIN granted to [yellow]{current_user}[/].")
+    except mysql.connector.Error as err:
+        console.print(f"[yellow]  ⚠  Could not grant admin privileges to {current_user}: {err}[/]")
+
     clone_user, clone_password = get_clone_creds()
     repl_user, repl_password = get_repl_creds()
 
@@ -222,7 +238,7 @@ def _server_info(conn: mysql.connector.MySQLConnection) -> dict:
     cur.execute(
         "SELECT COUNT(*) AS cnt FROM information_schema.processlist "
         "WHERE user NOT IN ('system user', 'event_scheduler','pmm','orc_client_user', %s) "
-        "AND command != 'Daemon' "
+        "AND command not in ('Daemon','Sleep') "
         "AND id != CONNECTION_ID()",
         (conn.user,),
     )
