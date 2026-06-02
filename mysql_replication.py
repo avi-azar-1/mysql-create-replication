@@ -435,7 +435,8 @@ def reset_replica(replica_conn):
     console.print("[bold green]✔[/] Replica reset complete.")
 
 
-def clone_from_master(replica_conn, master_host: str, master_port: int):
+def clone_from_master(replica_conn, master_host: str, master_port: int,
+                      admin_user: str, admin_password: str):
     """
     Use the MySQL Clone Plugin to clone data from the master to the replica.
 
@@ -493,7 +494,7 @@ def clone_from_master(replica_conn, master_host: str, master_port: int):
 
     # Open a second connection to poll clone progress (the first is busy
     # executing CLONE INSTANCE).
-    root_user, root_password = get_root_creds()
+    root_user, root_password = admin_user, admin_password
     try:
         monitor_conn = mysql.connector.connect(
             host=replica_conn.server_host,
@@ -817,7 +818,7 @@ def main(master: str, replica: str, admin_user: str | None, admin_password: str 
 
     reset_replica(replica_conn)
 
-    clone_from_master(replica_conn, master_host, master_port)
+    clone_from_master(replica_conn, master_host, master_port, root_user, root_password)
 
     # After clone the replica restarts — reconnect
     console.print()
