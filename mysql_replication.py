@@ -369,7 +369,7 @@ def verify_servers(master_conn, replica_conn, master_host, replica_host):
 
     # ── Orchestrator topology BEFORE (optional) ─────────────────────────────────
     orch_host = os.getenv("ORCHESTRATOR_HOST")
-    orch_cluster = master_host  # cluster alias = master hostname (Orchestrator convention)
+    orch_cluster = master_host.split(".")[0]  # short hostname only — Orchestrator convention
 
     if orch_host:
         console.print()
@@ -848,7 +848,7 @@ def main(master: str, replica: str, admin_user: str | None, admin_password: str 
 
     # ── Orchestrator topology (optional) ──────────────────────────────────
     orch_host = os.getenv("ORCHESTRATOR_HOST")
-    orch_cluster = master_host  # cluster alias = master hostname (Orchestrator convention)
+    orch_cluster = master_host.split(".")[0]  # short hostname only — Orchestrator convention
 
     if orch_host:
         console.print()
